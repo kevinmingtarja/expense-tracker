@@ -12,12 +12,18 @@ import pygsheets
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 def make_query():
+    """
+    Returns a list of queries(string) in
+    the same query format as the Gmail search box.
+    """
+    # Add queries here if you have additional queries
     query_lst = ['label:ocbc']
     return query_lst
 
 
 def tracker(query):
-    """Shows basic usage of the Gmail API.
+    """
+    Shows basic usage of the Gmail API.
     Lists the user's Gmail labels.
     """
     creds = None
@@ -68,12 +74,16 @@ def tracker(query):
 
 
 def parse_ocbc(lst):
+    """
+    Takes in a list of messages.
+    Returns a pandas dataframe with 4 columns (Date, Desc, Amount, and Source).
+    """
     dates = []
     descs = []
     amounts = []
 
     for msg in lst:
-        # Get dates
+        # Get date
         header = msg['payload']['headers']
         for dct in header:
             if dct['name'] == 'Date':
@@ -82,6 +92,7 @@ def parse_ocbc(lst):
                 date = datetime.strptime(date[:stop], '%d %b %Y')
                 dates.append(date)
 
+        # Get description and amount
         snippet = msg['snippet']
         desc_idx = snippet.find('.')
         amt_start = snippet.find('SGD') + 4
@@ -90,6 +101,7 @@ def parse_ocbc(lst):
         descs.append(snippet[:desc_idx])
         amounts.append(snippet[amt_start:amt_end])
 
+    # Reverse the order
     dates.reverse()
     descs.reverse()
     amounts.reverse()
@@ -99,6 +111,11 @@ def parse_ocbc(lst):
 
 
 def to_google_sheets(df):
+    """
+    Takes in a pandas dataframe.
+    Modifies the Google Sheet spreadsheet.
+    Returns None.
+    """
     # Authorisation
     gc = pygsheets.authorize(service_file='/Users/kevin/PycharmProjects/ExpensesTracker/creds.json')
     # Open the Google Sheets spreadsheet
@@ -110,12 +127,13 @@ def to_google_sheets(df):
 
 
 def main():
+    # Build query
     query = make_query()
-
+    # Build list of messages
     msg_lst_ocbc = tracker(query[0])
-
+    # Create dataframe
     df_ocbc = parse_ocbc(msg_lst_ocbc)
-
+    # Modifies spreadsheet
     to_google_sheets(df_ocbc)
 
     print('Edit Done Succesfully.')
