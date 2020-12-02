@@ -17,7 +17,7 @@ def make_query():
     the same query format as the Gmail search box.
     """
     # Add queries here if you have additional queries
-    query_lst = ['label:ocbc']
+    query_lst = ['from:(Notifications@ocbc.com)', 'from:(noreply@notify.ocbc.com)']
     return query_lst
 
 
@@ -71,13 +71,7 @@ def tracker(query):
         print('An error occured: ', e)
 
 
-
-
-def parse_ocbc(lst):
-    """
-    Takes in a list of messages.
-    Returns a pandas dataframe with 4 columns (Date, Desc, Amount, and Source).
-    """
+def parse_debit_ocbc(lst):
     dates = []
     descs = []
     amounts = []
@@ -88,25 +82,76 @@ def parse_ocbc(lst):
         for dct in header:
             if dct['name'] == 'Date':
                 date = dct['value']
+                start = date.find(',') + 2
                 stop = date.find(':') - 3
-                date = datetime.strptime(date[:stop], '%d %b %Y')
+                date = datetime.strptime(date[start:stop], '%d %b %Y')
                 dates.append(date)
 
         # Get description and amount
         snippet = msg['snippet']
-        desc_idx = snippet.find('.')
-        amt_start = snippet.find('SGD') + 4
-        amt_end = snippet.find('From') - 1
+        desc_start = snippet.find(')') + 5
+        desc_stop = snippet.find('If you did not make this transaction') - 2
+        amt_start = snippet.find('SGD') + 3
+        amt_end = snippet.find('was charged') - 1
 
-        descs.append(snippet[:desc_idx])
+        descs.append(snippet[desc_start:desc_stop])
         amounts.append(snippet[amt_start:amt_end])
+
+    return dates, descs, amounts
+
+
+def parse_ocbc(lst1, lst2):
+    """
+    Takes in a list of messages.
+    Returns a pandas dataframe with 4 columns (Date, Desc, Amount, and Source).
+    """
+    dates, descs, amounts = parse_debit_ocbc(lst1)
+
+    for msg in lst2:
+        # Get date
+        header = msg['payload']['headers']
+        for dct in header:
+            if dct['name'] == 'Date':
+                date = dct['value']
+                stop = date.find(':') - 3
+                date = datetime.strptime(date[:stop], '%d %b %Y')
+
+            if dct['name'] == 'Subject':
+                subject = dct['value']
+                if subject == 'OCBC Alert Withdrawal Made':
+                    snippet = msg['snippet']
+                    desc = '-'
+                    amt_start = snippet.find('SGD') + 4
+                    amt_end = snippet.find('was withdrawn') - 1
+                    amt = snippet[amt_start:amt_end]
+                    # Check for duplicates, I classify duplicates as those more expensive than $10
+                    if amt in amounts:
+                        if float(amt) >= 10:
+                            break
+                    descs.append(desc)
+                    amounts.append(amt)
+                    dates.append(date)
+
+
+                elif 'Pay Anyone' in subject:
+                    # Get description and amount
+                    snippet = msg['snippet']
+                    desc_idx = snippet.find('.')
+                    amt_start = snippet.find('SGD') + 4
+                    amt_end = snippet.find('From') - 1
+
+                    descs.append(snippet[:desc_idx])
+                    amounts.append(snippet[amt_start:amt_end])
+                    dates.append(date)
+
 
     # Reverse the order
     dates.reverse()
     descs.reverse()
     amounts.reverse()
 
-    df = pd.DataFrame(data = {'Date': dates, 'Description': descs, 'Amount': amounts, 'Source': ['OCBC Pay Anyone']*len(dates)})
+
+    df = pd.DataFrame(data = {'Date': dates, 'Description': descs, 'Amount': amounts, 'Source': ['OCBC']*len(dates)})
     return df
 
 
@@ -124,20 +169,41 @@ def to_google_sheets(df):
     curr = sheet[0]
     # Update the sheet with the df supplied as input starting at cell A1 (1, 1)
     curr.set_dataframe(df, (1, 1))
+    # Sorts the date column in ascending order
+    curr.sort_range((2,1), (100,100), basecolumnindex=0, sortorder='ASCENDING')
+
+    print('Calculating Total')
+    cells = curr.get_all_values(include_empty_rows= False, include_tailing_empty= False, returnas='cells')
+    cells = list(filter(lambda x: len(x) != 0, cells))
+
+    last_row = cells[-1][2].row
+    col = cells[-1][2].col
+    # Compute total expenses 
+    total = curr.get_values((2, col), (last_row, col), returnas='matrix', value_render='UNFORMATTED_VALUE')
+    total = sum(map(lambda x: float(x[0]), total))
+    curr.update_value((last_row+1, col-1), 'Total: ', parse=None)
+    curr.update_value((last_row+1, col), total, parse=None)
 
 
 def main():
     # Build query
     query = make_query()
+
     # Build list of messages
-    msg_lst_ocbc = tracker(query[0])
+    print('Reading Emails from:', query)
+    msg_list_paynow = tracker(query[0])
+    msg_lst_ocbc_debit = tracker(query[1])
+
     # Create dataframe
-    df_ocbc = parse_ocbc(msg_lst_ocbc)
+    print('Parsing Emails')
+    df_ocbc = parse_ocbc(msg_lst_ocbc_debit, msg_list_paynow)
+
     # Modifies spreadsheet
+    print('Writing to Google Sheets')
     to_google_sheets(df_ocbc)
 
     print('Edit Done Succesfully.')
 
-
+    
 if __name__ == '__main__':
     main()
